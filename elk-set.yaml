@@ -1,0 +1,190 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: elk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kibana
+  template:
+    metadata:
+      labels:
+        app: kibana
+    spec:
+      containers:
+      - name: kibana
+        image: docker.elastic.co/kibana/kibana:7.17.1
+        ports:
+        - containerPort: 5601 # Kibana UI Port
+          name: http
+        env:
+        - name: ELASTICSEARCH_HOSTS
+          value: "http://elasticsearch:9200"
+        # - name: ELASTICSEARCH_SERVICEACCOUNTTOKEN
+        #   value: "AAEAAWVsYXN0aWMva2liYW5hL2tpYmFuYTptVFNXNEtGR1JzbUVYOG9VOHRfQ3BR"
+        # - name: ELASTICSEARCH_USERNAME
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: elastic-credentials
+        #       key: ELASTICSEARCH_USERNAME
+        # - name: ELASTICSEARCH_PASSWORD
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: elastic-credentials
+        #       key: ELASTICSEARCH_PASSWORD
+        # resources:
+          # requests:
+          #   memory: "2Gi"
+          #   cpu: "1"
+          # limits:
+          #   memory: "1Gi"
+          #   cpu: "1"
+        # readinessProbe: # Checks if the Kibana API is available before marking the pod as ready.
+        #   httpGet:
+        #     path: /api/status
+        #     port: 5601
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 5
+        # livenessProbe: # Ensures Kibana is healthy and restarts the container if it becomes unresponsive.
+        #   httpGet:
+        #     path: /api/status
+        #     port: 5601
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: elk
+spec:
+  selector:
+    app: kibana
+  ports:
+  - name: http
+    protocol: TCP
+    port: 5601
+    targetPort: 5601
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: elk
+data:
+        # elasticsearch
+        # user => "${ELASTICSEARCH_USERNAME}"
+        # password => "${ELASTICSEARCH_PASSWORD}"
+  logstash.conf: |
+    input {
+      beats {
+        port => 5044
+      }
+      http {
+        port => 8080  # The port on which to listen for HTTP requests
+        host => "0.0.0.0"  # Bind to all network interfaces
+        ssl => false  # Disable SSL for simplicity; enable in production
+        codec => "json"  # Decode incoming requests as JSON
+        # additional_codecs => {
+        #   "application/json" => "json"
+        #   "text/plain" => "plain"
+        # }
+        # response_headers => {
+        #   "Access-Control-Allow-Origin" => "*"
+        # }
+      }
+    }
+    # filter {
+    #   json {
+    #     source => "message"
+    #   }
+    # }
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch:9200"]
+        # index => "logstash-%{+YYYY.MM.dd}" # default
+        # index => "custom-index-name"       # Static index name
+        # index => "logstash-%{[fields][app_name]}-%{+yyyy.MM.dd}"  # Dynamic index name, where fields and app_name in input is {"fields": {"app_name": "app1"}}
+      }
+      stdout { codec => rubydebug }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logstash
+  namespace: elk
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logstash
+  template:
+    metadata:
+      labels:
+        app: logstash
+    spec:
+      containers:
+      - name: logstash
+        image: docker.elastic.co/logstash/logstash:7.17.1
+        ports:
+        - containerPort: 5044 # Beats input port
+          name: beats
+        - containerPort: 9600 # Logstash HTTP API port
+          name: api
+        env:
+        - name: LS_JAVA_OPTS
+          value: "-Xms1g -Xmx1g" # Adjust heap size as per your workload
+        # resources:
+          # requests: # init
+          #   memory: "2Gi"
+          #   cpu: "1"
+          # limits:
+          #   memory: "1Gi"
+          #   cpu: "1"
+        # readinessProbe:
+        #   httpGet:
+        #     path: /
+        #     port: 9600
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 5
+        # livenessProbe:
+        #   httpGet:
+        #     path: /
+        #     port: 9600
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 5
+        volumeMounts:
+        - name: config-volume
+          mountPath: /usr/share/logstash/pipeline/
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: logstash-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logstash
+  namespace: elk
+spec:
+  type: ClusterIP
+  ports:
+  - name: beats
+    port: 5044
+    targetPort: 5044
+  - name: http-input
+    port: 8080
+    targetPort: 8080
+  - name: api
+    port: 9600
+    targetPort: 9600
+  selector:
+    app: logstash
+
+
+# curl -XPOST "http://localhost:5044" -d '{"message": "Hello Logstash!"}'

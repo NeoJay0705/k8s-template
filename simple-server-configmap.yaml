@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-config
+data:
+  # environment variables
+  database_url: "mongodb://my-database:27017"
+  max_connections: "100"

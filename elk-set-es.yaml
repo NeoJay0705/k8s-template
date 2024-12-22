@@ -1,0 +1,131 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cheap-storage
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard # | pd-ssd
+  fsType: ext4
+volumeBindingMode: WaitForFirstConsumer # Ensures the PV is provisioned in the same zone as the pod
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: elk
+---
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: elasticsearch-config
+#   namespace: elk
+# data:
+#   elasticsearch.yml: |
+#     xpack.security.enrollment.enabled: true
+# ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: elk
+spec:
+  serviceName: elasticsearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command:
+        - sh
+        - -c
+        - |
+          chown -R elasticsearch:elasticsearch /usr/share/elasticsearch/data
+          chmod -R 770 /usr/share/elasticsearch/data
+        volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.17.1
+        ports:
+        - containerPort: 9200 # REST API Port
+          name: http
+        - containerPort: 9300 # Transport Port (for clustering)
+          name: transport
+        env:
+        # - name: cluster.name
+        #   value: "elasticsearch"
+        # - name: node.name
+        #   valueFrom:
+        #     fieldRef:
+        #       fieldPath: metadata.name
+        # - name: discovery.seed_hosts
+        #   value: "elasticsearch-0.elasticsearch,elasticsearch-1.elasticsearch,elasticsearch-2.elasticsearch"
+        # - name: cluster.initial_master_nodes
+        #   value: "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+        - name: discovery.type
+          value: single-node
+        - name: bootstrap.memory_lock
+          value: "true"
+        - name: ES_JAVA_OPTS
+          value: "-Xms1g -Xmx1g"
+        # - name: XPACK_SECURITY_ENROLLMENT_ENABLED
+        #   value: "true"
+        # resources:
+          # requests:
+          #   memory: "1Gi"
+          #   cpu: "2"
+          # limits:
+          #   memory: "1Gi"
+          #   cpu: "1"
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          # fsGroup: 1000
+          allowPrivilegeEscalation: false
+        volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+        # - name: config-volume
+        #   mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+        #   subPath: elasticsearch.yml
+  volumeClaimTemplates:
+  - metadata:
+      name: es-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: cheap-storage
+      resources:
+        requests:
+          storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: elk
+spec:
+  ports:
+  - name: http
+    port: 9200
+    targetPort: 9200
+  - name: transport
+    port: 9300
+    targetPort: 9300
+  selector:
+    app: elasticsearch
+  type: ClusterIP
+---
+
+# kubectl scale statefulset elasticsearch --replicas=0 -n elk
+# kubectl delete statefulset elasticsearch -n elk --cascade=orphan
+# kubectl get pvc -n elk
+# kubectl delete pvc {name} -n elk
+
+# curl -X GET "http://localhost:9200"
